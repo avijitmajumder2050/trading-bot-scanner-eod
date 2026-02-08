@@ -2,6 +2,7 @@
 # File: app/scanners/EMA_10_20_breakout.py
 # ==========================================================
 
+import time
 import logging
 import pandas as pd
 from ta.trend import EMAIndicator
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta
 # Activate global logging
 from app.config import logging_config
 
+from app.config.dhan_auth import dhan
 from app.config.aws_s3 import read_csv_from_s3, upload_csv_to_s3
 from app.config.settings import (
     IST,
@@ -17,7 +19,6 @@ from app.config.settings import (
     MAP_FILE_KEY,
     EOD_DATA_PREFIX
 )
-from app.config.dhan_auth import dhan
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +26,38 @@ OUTPUT_KEY = "uploads/ema_momentum_EOD.csv"
 
 
 # ==============================
-# Check if market day
+# UPDATE TODAY CANDLE
 # ==============================
-def is_market_day(timestamp):
-    # Monday=0, Sunday=6
-    return timestamp.weekday() < 5
+def update_today_candle(df, today, live):
+
+    if "ohlc" not in live:
+        logger.warning("Live data missing OHLC")
+        return df
+
+    ohlc = live["ohlc"]
+
+    df.loc[today] = {
+        "open": ohlc.get("open", 0),
+        "high": ohlc.get("high", 0),
+        "low": ohlc.get("low", 0),
+        "close": live.get("last_price", 0),
+        "volume": live.get("volume", 0),
+    }
+
+    df.sort_index(inplace=True)
+    return df.tail(120)
 
 
 # ==============================
 # EMA PRICE CROSS SCANNER
 # ==============================
 def ema_price_cross():
+
     logger.info("🚀 EMA PRICE CROSS SCANNER STARTED")
 
     scan_time = datetime.now(IST)
     scan_time_str = scan_time.strftime("%Y-%m-%d %H:%M:%S")
+    today = pd.Timestamp(scan_time.date())
 
     # ---- Load Mapping ----
     df_map = read_csv_from_s3(S3_BUCKET, MAP_FILE_KEY)
@@ -58,14 +76,35 @@ def ema_price_cross():
 
     logger.info(f"Mapping loaded | Total stocks: {len(instrument_ids)}")
 
+    # ---- Fetch Live Quotes ----
+    live_data = {}
+
+    for i in range(0, len(instrument_ids), 1000):
+        batch = instrument_ids[i:i + 1000]
+        try:
+            resp = dhan.quote_data(securities={"NSE_EQ": batch})
+            live_data.update(resp["data"]["data"].get("NSE_EQ", {}))
+            logger.info(f"Fetched live batch size: {len(batch)}")
+        except Exception as e:
+            logger.error(f"Quote API error: {e}")
+        time.sleep(0.4)
+
+    logger.info(f"Total live quotes received: {len(live_data)}")
+
     matched = []
 
     # ---- Scan Each Stock ----
     for _, row in df_map.iterrows():
+
         stock = row["Stock Name"]
         instrument_id = row["Instrument ID"]
         market_cap = float(row["Market Cap"])
         setup_case = row["Setup_Case"]
+
+        live = live_data.get(str(instrument_id))
+        if not live:
+            logger.warning(f"{stock} skipped — No live data")
+            continue
 
         eod_key = f"{EOD_DATA_PREFIX}/{instrument_id}.csv"
         df = read_csv_from_s3(S3_BUCKET, eod_key)
@@ -79,8 +118,7 @@ def ema_price_cross():
             df["date"] = pd.to_datetime(df["date"])
             df.set_index("date", inplace=True)
 
-            # Only take last 120 candles
-            df = df.tail(120)
+            df = update_today_candle(df, today, live)
 
             if len(df) < 50:
                 logger.warning(f"{stock} skipped — Not enough candles")
@@ -94,7 +132,7 @@ def ema_price_cross():
             latest = df.iloc[-1]
             prev = df.iloc[-2]
 
-            # ---- EMA CROSS CONDITIONS ----
+            # ---- Conditions ----
             cross_ema10 = prev["close"] <= prev["ema10"] and latest["close"] > latest["ema10"]
             cross_ema20 = prev["close"] <= prev["ema20"] and latest["close"] > latest["ema20"]
 
@@ -111,6 +149,7 @@ def ema_price_cross():
             )
 
             if cond_price_cross and cond_alignment and cond_filters:
+
                 logger.info(f"🚀 EMA MOMENTUM SIGNAL → {stock}")
 
                 matched.append({
@@ -130,18 +169,18 @@ def ema_price_cross():
 
     logger.info(f"Total matched stocks today: {len(matched)}")
 
-    # ---- Prepare DataFrame ----
+    # =====================================================
+    # TODAY DATAFRAME (FOR TELEGRAM RETURN)
+    # =====================================================
     today_df = pd.DataFrame(matched)
 
-    # ---- Weekly storage ----
+    # =====================================================
+    # WEEKLY ROLLING STORAGE (S3)
+    # =====================================================
     result_df = today_df.copy()
+
     try:
-        try:
-            existing_df = read_csv_from_s3(S3_BUCKET, OUTPUT_KEY)
-        except Exception as e:
-            logger.warning(f"S3 key not found, creating new file: {e}")
-            existing_df = pd.DataFrame()
-            
+        existing_df = read_csv_from_s3(S3_BUCKET, OUTPUT_KEY)
 
         if not existing_df.empty and "Scan Time" in existing_df.columns:
             existing_df["Scan Time"] = pd.to_datetime(existing_df["Scan Time"])
@@ -149,29 +188,59 @@ def ema_price_cross():
 
             today_date = scan_time.date()
             week_start = today_date - timedelta(days=today_date.weekday())
-            existing_df = existing_df[existing_df["Scan Time"].dt.date >= week_start]
+
+            # Keep only this week data
+            existing_df = existing_df[
+                existing_df["Scan Time"].dt.date >= week_start
+            ]
 
             combined_df = pd.concat([existing_df, result_df], ignore_index=True)
+
             combined_df.sort_values("Scan Time", ascending=False, inplace=True)
-            combined_df.drop_duplicates(subset=["Security ID"], keep="first", inplace=True)
+
+            # Drop duplicate Security ID (keep latest)
+            combined_df.drop_duplicates(
+                subset=["Security ID"],
+                keep="first",
+                inplace=True
+            )
 
             result_df = combined_df
+
     except Exception as e:
         logger.warning(f"Weekly merge skipped: {e}")
 
-    # ---- Column order ----
+    # ---- Enforce column order ----
     columns_order = [
-        "Stock Name", "Security ID", "Market Cap",
-        "Open", "Price", "High", "Low",
-        "Setup_Case", "Scan Time"
+        "Stock Name",
+        "Security ID",
+        "Market Cap",
+        "Open",
+        "Price",
+        "High",
+        "Low",
+        "Setup_Case",
+        "Scan Time"
     ]
+
     result_df = result_df.reindex(columns=columns_order)
+
     upload_csv_to_s3(result_df, S3_BUCKET, OUTPUT_KEY)
 
     logger.info(
-        f"✅ EMA momentum file updated | Records={len(result_df)} | "
+        f"✅ EMA momentum file updated | "
+        f"Records={len(result_df)} | "
         f"Bucket={S3_BUCKET} | Key={OUTPUT_KEY}"
     )
+
+    # =====================================================
+    # RETURN ONLY TODAY MATCHES
+    # =====================================================
+    if not today_df.empty:
+        today_df = today_df.reindex(columns=columns_order)
+        logger.info(f"Returning {len(today_df)} stocks for Telegram notification")
+    else:
+        logger.info("No EMA momentum stocks found today.")
 
     return today_df
 
