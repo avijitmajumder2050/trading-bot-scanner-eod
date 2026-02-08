@@ -94,8 +94,6 @@ async def post_init(app):
         logger.info("📊 Running EMA EOD scan on startup")
 
         today_df = ema_price_cross(
-            save_to_s3=True,
-            return_df=True
         )
 
         if today_df is not None and not today_df.empty:
