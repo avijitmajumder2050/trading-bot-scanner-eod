@@ -16,6 +16,7 @@ from app.config.aws_ssm import get_param
 
 from app.scanners.EMA_10_20_breakout import ema_price_cross
 from app.bot.telegram_sender import send_telegram_message
+from app.bot.scheduler import terminate_after_delay
 
 
 # ───────────────────────────────
@@ -133,6 +134,8 @@ async def post_init(app):
         await send_telegram_message(f"❌ EMA Scan Error: {e}")
 
     
+
+    app.create_task(terminate_after_delay(min_minutes=3, max_minutes=5))
 
 
 # ───────────────────────────────

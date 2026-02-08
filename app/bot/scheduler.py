@@ -15,6 +15,8 @@ from app.strategy.stock_selector import select_best_stock,rank_stocks
 from app.strategy.nifty_filter import is_nifty_trade_allowed
 from app.execution.trade_executor import execute_trade
 from app.broker.market_data import get_nifty_ltp_and_prev_close
+import random
+
 
 # --------------------------
 # InsideBar 5-min scan state
@@ -33,6 +35,8 @@ opposite_enabled = False
 opposite_alerted = set()
 opposite_alert_lock = threading.Lock()
 opposite_lock = asyncio.Lock()
+
+
 
 
 
@@ -141,3 +145,22 @@ async def run_nifty_breakout_trade():
     except Exception as e:
         logging.error(f"❌ Error in run_nifty_breakout_trade: {e}")
         await send_telegram_message(f"❌ Trade execution error: {e}")
+
+
+
+async def terminate_after_delay(min_minutes=2, max_minutes=5):
+    """Terminate EC2 instance after a random delay between min_minutes and max_minutes."""
+    delay_minutes = random.randint(min_minutes, max_minutes)
+    logging.info(f"⏳ EC2 will terminate in {delay_minutes} minutes")
+    await send_telegram_message(f"⏳ EC2 will terminate in {delay_minutes} minutes")
+    
+    await asyncio.sleep(delay_minutes * 60)
+
+    instance_id = get_instance_id()
+    if not instance_id or instance_id == "UNKNOWN":
+        logging.error("❌ Cannot terminate — instance ID not found")
+        return
+
+    logging.info(f"🛑 {delay_minutes} minutes elapsed. Terminating EC2 {instance_id}...")
+    await send_telegram_message(f"🛑 {delay_minutes} minutes elapsed. Terminating EC2 ...")
+    terminate_instance(instance_id)
