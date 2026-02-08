@@ -53,3 +53,26 @@ def list_s3_files(bucket: str, prefix: str):
     except Exception as e:
         logging.error(f"❌ Error listing S3 files: {e}")
         return []
+
+def upload_csv_to_s3(df, bucket, key):
+    try:
+        if df is None or df.empty:
+            logging.warning(f"⚠️ Skipping upload — DataFrame empty for {key}")
+            return
+
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=csv_buffer.getvalue(),
+            ContentType="text/csv"
+        )
+
+        logging.info(f"✅ Uploaded to s3://{bucket}/{key}")
+
+    except Exception as e:
+        logging.error(f"❌ Upload failed: {e}")
+
+
