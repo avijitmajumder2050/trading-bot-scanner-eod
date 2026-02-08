@@ -1,7 +1,7 @@
 import logging
 import os
 
-LOG_FILE = os.getenv("BOT_LOG_FILE", "/var/log/trading-bot.log")
+LOG_FILE = os.getenv("BOT_LOG_FILE", "/var/log/trading-bot-scanner-eod.log")
 
 logging.basicConfig(
     level=logging.INFO,
