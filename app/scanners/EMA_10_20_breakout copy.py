@@ -8,7 +8,7 @@ import pandas as pd
 from ta.trend import EMAIndicator
 from datetime import datetime, timedelta
 
-# Activate global logging
+# Activate global logging (DO NOT reconfigure logging here)
 from app.config import logging_config
 
 from app.config.dhan_auth import dhan
@@ -62,10 +62,12 @@ def ema_price_cross():
     # ---- Load Mapping ----
     df_map = read_csv_from_s3(S3_BUCKET, MAP_FILE_KEY)
 
+    logger.info(f"Mapping file loaded. Rows: {len(df_map)}")
+
     if df_map.empty:
         logger.error("Mapping file empty or not found")
         upload_csv_to_s3(pd.DataFrame(), S3_BUCKET, OUTPUT_KEY)
-        return pd.DataFrame()
+        return "Mapping file not available"
 
     df_map = df_map.dropna(
         subset=["Stock Name", "Instrument ID", "Market Cap", "Setup_Case"]
@@ -73,8 +75,6 @@ def ema_price_cross():
 
     df_map["Instrument ID"] = df_map["Instrument ID"].astype(int)
     instrument_ids = df_map["Instrument ID"].tolist()
-
-    logger.info(f"Mapping loaded | Total stocks: {len(instrument_ids)}")
 
     # ---- Fetch Live Quotes ----
     live_data = {}
@@ -169,16 +169,11 @@ def ema_price_cross():
 
     logger.info(f"Total matched stocks today: {len(matched)}")
 
-    # =====================================================
-    # TODAY DATAFRAME (FOR TELEGRAM RETURN)
-    # =====================================================
-    today_df = pd.DataFrame(matched)
+    result_df = pd.DataFrame(matched)
 
-    # =====================================================
-    # WEEKLY ROLLING STORAGE (S3)
-    # =====================================================
-    result_df = today_df.copy()
-
+    # =============================
+    # WEEKLY ROLLING + NO DUPLICATES
+    # =============================
     try:
         existing_df = read_csv_from_s3(S3_BUCKET, OUTPUT_KEY)
 
@@ -196,9 +191,10 @@ def ema_price_cross():
 
             combined_df = pd.concat([existing_df, result_df], ignore_index=True)
 
+            # Latest first
             combined_df.sort_values("Scan Time", ascending=False, inplace=True)
 
-            # Drop duplicate Security ID (keep latest)
+            # Drop duplicates (latest kept)
             combined_df.drop_duplicates(
                 subset=["Security ID"],
                 keep="first",
@@ -210,8 +206,8 @@ def ema_price_cross():
     except Exception as e:
         logger.warning(f"Weekly merge skipped: {e}")
 
-    # ---- Enforce column order ----
-    columns_order = [
+    # Enforce column order
+    result_df = result_df.reindex(columns=[
         "Stock Name",
         "Security ID",
         "Market Cap",
@@ -221,9 +217,7 @@ def ema_price_cross():
         "Low",
         "Setup_Case",
         "Scan Time"
-    ]
-
-    result_df = result_df.reindex(columns=columns_order)
+    ])
 
     upload_csv_to_s3(result_df, S3_BUCKET, OUTPUT_KEY)
 
@@ -233,21 +227,11 @@ def ema_price_cross():
         f"Bucket={S3_BUCKET} | Key={OUTPUT_KEY}"
     )
 
-    # =====================================================
-    # RETURN ONLY TODAY MATCHES
-    # =====================================================
-    if not today_df.empty:
-        today_df = today_df.reindex(columns=columns_order)
-        logger.info(f"Returning {len(today_df)} stocks for Telegram notification")
-    else:
-        logger.info("No EMA momentum stocks found today.")
-
-    return today_df
+    return f"{len(result_df)} stocks saved to S3"
 
 
 # ==============================
 # ENTRY POINT
 # ==============================
 if __name__ == "__main__":
-    df = ema_price_cross()
-    print(df)
+    print(ema_price_cross())

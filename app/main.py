@@ -14,6 +14,9 @@ from app.bot.scheduler import (
 )
 from app.config.aws_ssm import get_param
 
+from app.scanners.EMA_10_20_breakout import ema_price_cross
+from app.bot.telegram_sender import send_telegram_message
+
 
 # ───────────────────────────────
 # Logging (FORCED – DO NOT USE basicConfig)
@@ -77,11 +80,60 @@ BOT_TOKEN = get_param("/trading-bot/telegram/BOT_TOKEN")
 # ───────────────────────────────
 # Background jobs (PTB SAFE)
 # ───────────────────────────────
+
+
 async def post_init(app):
     logger.info("🚀 Starting background jobs")
 
-    app.create_task(run_nifty_breakout_trade())
-    app.create_task(terminate_at(target_hour=12, target_minute=30))
+    # Existing jobs
+    #app.create_task(run_nifty_breakout_trade())
+    #app.create_task(terminate_at(target_hour=12, target_minute=30))
+
+    # 🔥 RUN EMA SCANNER IMMEDIATELY ON START
+    try:
+        logger.info("📊 Running EMA EOD scan on startup")
+
+        today_df = ema_price_cross(
+            save_to_s3=True,
+            return_df=True
+        )
+
+        if today_df is not None and not today_df.empty:
+
+            message = "📊 <b>EMA Momentum Stocks (BUY Setup)</b>\n\n"
+            symbols_for_copy = []
+
+            for _, row in today_df.iterrows():
+                message += (
+                    f"🔹 <b>{row['Stock Name']}</b>\n"
+                    f"Price: ₹{row['Price']}\n"
+                    f"Setup: {row['Setup_Case']}\n\n"
+                )
+
+                symbols_for_copy.append(
+                    f"NSE:{row['Stock Name'].replace(' ', '').upper()}-EQ"
+                )
+
+            copy_line = ",".join(symbols_for_copy)
+
+            message += (
+                "📋 <b>FYERS Copy:</b>\n"
+                f"<code>{copy_line}</code>"
+            )
+
+            await send_telegram_message(message)
+            logger.info("✅ EMA startup alert sent")
+
+        else:
+            await send_telegram_message(
+                "📊 EMA Scan Completed\nNo momentum signals found."
+            )
+            logger.info("ℹ️ No EMA signals found on startup")
+
+    except Exception as e:
+        logger.error(f"❌ EMA startup error: {e}")
+        await send_telegram_message(f"❌ EMA Scan Error: {e}")
+
     
 
 
