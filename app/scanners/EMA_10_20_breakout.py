@@ -18,6 +18,7 @@ from app.config.settings import (
     EOD_DATA_PREFIX
 )
 from app.config.dhan_auth import dhan
+from app.broker.market_data import get_quotes_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,24 @@ def is_market_day(timestamp):
     # Monday=0, Sunday=6
     return timestamp.weekday() < 5
 
+# ------------------------------
+# Update Today Candle
+# ------------------------------
+def update_today_candle(df, today, live):
+    if "ohlc" not in live:
+        logger.warning("Live data missing OHLC")
+        return df
+
+    ohlc = live["ohlc"]
+    df.loc[today] = {
+        "open": ohlc.get("open", 0),
+        "high": ohlc.get("high", 0),
+        "low": ohlc.get("low", 0),
+        "close": live.get("last_price", 0),
+        "volume": live.get("volume", 0),
+    }
+    df.sort_index(inplace=True)
+    return df.tail(120)
 
 # ==============================
 # EMA PRICE CROSS SCANNER
@@ -40,6 +59,8 @@ def ema_price_cross():
 
     scan_time = datetime.now(IST)
     scan_time_str = scan_time.strftime("%Y-%m-%d %H:%M:%S")
+    today = pd.Timestamp(scan_time.date())
+    weekday = scan_time.weekday()  # Monday=0, Sunday=6
 
     # ---- Load Mapping ----
     df_map = read_csv_from_s3(S3_BUCKET, MAP_FILE_KEY)
@@ -55,8 +76,18 @@ def ema_price_cross():
 
     df_map["Instrument ID"] = df_map["Instrument ID"].astype(int)
     instrument_ids = df_map["Instrument ID"].tolist()
-
     logger.info(f"Mapping loaded | Total stocks: {len(instrument_ids)}")
+     # ------------------------------
+    # Get Live Data on Trading Days only
+    # ------------------------------
+    live_data = {}
+    if weekday < 5:  # Monday=0 ... Friday=4
+        live_data = get_quotes_with_retry(instrument_ids, "NSE_EQ") or {}
+        logger.info(f"Total live quotes received: {len(live_data)}")
+    else:
+        logger.info("Weekend detected — using only EOD data")
+
+    
 
     matched = []
 
@@ -78,6 +109,11 @@ def ema_price_cross():
             df.columns = df.columns.str.lower()
             df["date"] = pd.to_datetime(df["date"])
             df.set_index("date", inplace=True)
+             # Update today candle only on trading days
+            if weekday < 5:
+                live = live_data.get(str(instrument_id))
+                if live:
+                    df = update_today_candle(df, today, live)
 
             # Only take last 120 candles
             df = df.tail(120)
