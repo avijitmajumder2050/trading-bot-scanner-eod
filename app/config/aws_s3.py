@@ -4,60 +4,81 @@ import pandas as pd
 import io
 import os
 import logging
+from botocore.exceptions import ClientError
 
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-S3_BUCKET = os.getenv("S3_BUCKET", "dhan-trading-data")
+
+# Environment variable takes priority
+DEFAULT_BUCKET = os.getenv("S3_BUCKET", "dhan-trading-data")
+
+BUCKET_CANDIDATES = [
+    DEFAULT_BUCKET,
+    "dhan-trading-data",
+    "new-dhan-trading-data",
+]
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
-def read_csv_from_s3(bucket: str, key: str) -> pd.DataFrame:
-    """
-    Reads a CSV file from S3 and returns a pandas DataFrame.
-    
-    Args:
-        bucket (str): S3 bucket name
-        key (str): S3 object key (path to file)
 
-    Returns:
-        pd.DataFrame: CSV content as DataFrame
+def get_working_bucket():
     """
+    Returns the first S3 bucket that exists and is accessible.
+    """
+    for bucket in dict.fromkeys(BUCKET_CANDIDATES):
+        try:
+            s3.head_bucket(Bucket=bucket)
+            logging.info(f"✅ Using S3 bucket: {bucket}")
+            return bucket
+        except ClientError:
+            continue
+
+    raise RuntimeError(
+        f"No accessible bucket found: {BUCKET_CANDIDATES}"
+    )
+
+
+# Automatically detect bucket
+S3_BUCKET = get_working_bucket()
+
+
+def read_csv_from_s3(bucket=None, key="") -> pd.DataFrame:
+    bucket = bucket or S3_BUCKET
+
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
         return pd.read_csv(io.BytesIO(obj["Body"].read()))
     except s3.exceptions.NoSuchKey:
-        logging.error(f"❌ S3 key not found: s3://{bucket}/{key}")
+        logging.error(f"S3 key not found: s3://{bucket}/{key}")
         return pd.DataFrame()
     except Exception as e:
-        logging.error(f"❌ Error reading CSV from S3: {e}")
+        logging.error(f"Error reading CSV from S3: {e}")
         return pd.DataFrame()
 
-def list_s3_files(bucket: str, prefix: str):
-    """
-    List all files under a specific S3 prefix.
 
-    Args:
-        bucket (str): S3 bucket name
-        prefix (str): folder/prefix path
+def list_s3_files(bucket=None, prefix=""):
+    bucket = bucket or S3_BUCKET
 
-    Returns:
-        list: List of object keys
-    """
     try:
         paginator = s3.get_paginator("list_objects_v2")
         keys = []
+
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            contents = page.get("Contents", [])
-            for obj in contents:
+            for obj in page.get("Contents", []):
                 keys.append(obj["Key"])
+
         return keys
+
     except Exception as e:
-        logging.error(f"❌ Error listing S3 files: {e}")
+        logging.error(f"Error listing S3 files: {e}")
         return []
 
-def upload_csv_to_s3(df, bucket, key):
+
+def upload_csv_to_s3(df, bucket=None, key=""):
+    bucket = bucket or S3_BUCKET
+
     try:
         if df is None or df.empty:
-            logging.warning(f"⚠️ Skipping upload — DataFrame empty for {key}")
+            logging.warning(f"Skipping upload - DataFrame empty: {key}")
             return
 
         csv_buffer = io.StringIO()
@@ -67,12 +88,10 @@ def upload_csv_to_s3(df, bucket, key):
             Bucket=bucket,
             Key=key,
             Body=csv_buffer.getvalue(),
-            ContentType="text/csv"
+            ContentType="text/csv",
         )
 
-        logging.info(f"✅ Uploaded to s3://{bucket}/{key}")
+        logging.info(f"Uploaded to s3://{bucket}/{key}")
 
     except Exception as e:
-        logging.error(f"❌ Upload failed: {e}")
-
-
+        logging.error(f"Upload failed: {e}")

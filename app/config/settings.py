@@ -3,23 +3,27 @@
 import os
 from pytz import timezone
 from datetime import time
+
 from app.config.aws_ssm import get_param
+from app.config.aws_s3 import (
+    AWS_REGION,
+    S3_BUCKET,
+)
 
 # --- Timezone ---
 IST = timezone("Asia/Kolkata")
 
 # --- Scan Times ---
-INSIDEBAR_SCAN_TIME = time(9, 31)  # 9:31 AM
+INSIDEBAR_SCAN_TIME = time(9, 31)
 
-# --- AWS Config ---
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
-S3_BUCKET = os.getenv("S3_BUCKET", "dhan-trading-data")
+# --- S3 Keys ---
 MAP_FILE_KEY = "uploads/mapping.csv"
-NIFTYMAP_FILE_KEY="uploads/nifty_mapping.csv"
-# S3 keys
-CANDLE_FILE_KEY = "uploads/inside_bar_15min_data_RS80.csv"   # 15-min candle CSV in S3
-FILTERED_FILE_KEY = "uploads/inside_bar_15min_RS80.csv"  # optional filtered output
-EOD_DATA_PREFIX = "eod_data"   # 👈 folder in S3
+NIFTYMAP_FILE_KEY = "uploads/nifty_mapping.csv"
+
+CANDLE_FILE_KEY = "uploads/inside_bar_15min_data_RS80.csv"
+FILTERED_FILE_KEY = "uploads/inside_bar_15min_RS80.csv"
+
+EOD_DATA_PREFIX = "eod_data"
 
 # --- Logs ---
 LOG_DIR = "logs"

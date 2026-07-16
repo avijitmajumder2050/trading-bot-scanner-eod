@@ -10,10 +10,9 @@ from datetime import datetime, timedelta
 # Activate global logging
 from app.config import logging_config
 
-from app.config.aws_s3 import read_csv_from_s3, upload_csv_to_s3
+from app.config.aws_s3 import read_csv_from_s3, upload_csv_to_s3,S3_BUCKET
 from app.config.settings import (
     IST,
-    S3_BUCKET,
     MAP_FILE_KEY,
     EOD_DATA_PREFIX
 )
