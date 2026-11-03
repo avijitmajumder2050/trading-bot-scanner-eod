@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_KEY = "uploads/ema_momentum_EOD.csv"
 
 # ---- Rule thresholds ----
-MAX_DAY_MOVE_PCT = 3.0     # skip if |close vs prev close| on detection day >= this %
+MAX_DAY_MOVE_PCT = 6.0     # skip if |close vs prev close| on detection day >= this %
 
 
 # ==============================
