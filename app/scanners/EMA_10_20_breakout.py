@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_KEY = "uploads/ema_momentum_EOD.csv"
 
+# ---- Rule thresholds ----
+MAX_DAY_MOVE_PCT = 3.0     # skip if |close vs prev close| on detection day >= this %
+
 
 # ==============================
 # Check if market day
@@ -96,6 +99,8 @@ def ema_price_cross():
         instrument_id = row["Instrument ID"]
         market_cap = float(row["Market Cap"])
         setup_case = row["Setup_Case"]
+        price_strength = pd.to_numeric(row.get("Price Strength"), errors="coerce")
+        eps_strength = pd.to_numeric(row.get("EPS Strength"), errors="coerce")
 
         eod_key = f"{EOD_DATA_PREFIX}/{instrument_id}.csv"
         df = read_csv_from_s3(S3_BUCKET, eod_key)
@@ -137,15 +142,22 @@ def ema_price_cross():
             cond_alignment = latest["ema10"] > latest["ema20"] > latest["ema50"]
             cond_filters = market_cap > 500 and latest["volume"] > 70000
 
+            day_change_pct = (latest["close"] / prev["close"] - 1) * 100
+            cond_day_move = abs(day_change_pct) < MAX_DAY_MOVE_PCT
+
             logger.info(
                 f"{stock} | Cross10={cross_ema10} | "
                 f"Cross20={cross_ema20} | "
                 f"Align={cond_alignment} | "
                 f"MCap={market_cap} | "
-                f"Vol={latest['volume']}"
+                f"Vol={latest['volume']} | "
+                f"DayChg={day_change_pct:.2f}%"
             )
 
-            if cond_price_cross and cond_alignment and cond_filters:
+            if cond_price_cross and cond_alignment and cond_filters and not cond_day_move:
+                logger.info(f"{stock} skipped — day move {day_change_pct:.2f}% >= {MAX_DAY_MOVE_PCT}%")
+
+            if cond_price_cross and cond_alignment and cond_filters and cond_day_move:
                 logger.info(f"🚀 EMA MOMENTUM SIGNAL → {stock}")
 
                 matched.append({
@@ -156,6 +168,9 @@ def ema_price_cross():
                     "Price": round(latest["close"], 2),
                     "High": round(latest["high"], 2),
                     "Low": round(latest["low"], 2),
+                    "Day Chg %": round(day_change_pct, 2),
+                    "Price Strength": price_strength,
+                    "EPS Strength": eps_strength,
                     "Setup_Case": setup_case,
                     "Scan Time": scan_time_str
                 })
@@ -198,6 +213,7 @@ def ema_price_cross():
     columns_order = [
         "Stock Name", "Security ID", "Market Cap",
         "Open", "Price", "High", "Low",
+        "Day Chg %", "Price Strength", "EPS Strength",
         "Setup_Case", "Scan Time"
     ]
     result_df = result_df.reindex(columns=columns_order)
