@@ -1,5 +1,6 @@
 import logging
 import os
+import pandas as pd
 
 from telegram.ext import (
     ApplicationBuilder,
@@ -106,6 +107,7 @@ async def post_init(app):
                 message += (
                     f"🔹 <b>{row['Stock Name']}</b>\n"
                     f"Price: ₹{row['Price']}\n"
+                    f"Delivery: {row.get('Delivery %') if pd.notna(row.get('Delivery %')) else 'n/a'}%\n"
                     f"Setup: {row['Setup_Case']}\n\n"
                 )
 

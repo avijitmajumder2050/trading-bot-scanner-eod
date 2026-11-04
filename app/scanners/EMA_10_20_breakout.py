@@ -18,6 +18,7 @@ from app.config.settings import (
 )
 from app.config.dhan_auth import dhan
 from app.broker.market_data import get_quotes_with_retry
+from app.utils.nse_delivery import get_delivery_pct
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ OUTPUT_KEY = "uploads/ema_momentum_EOD.csv"
 
 # ---- Rule thresholds ----
 MAX_DAY_MOVE_PCT = 6.0     # skip if |close vs prev close| on detection day >= this %
+MIN_PRICE_STRENGTH = 80    # mapping.csv "Price Strength"
+MIN_EPS_STRENGTH = 80      # mapping.csv "EPS Strength"
+MIN_DELIVERY_PCT = 47.0    # NSE delivery % on the signal candle's day
+DELIVERY_WAIT_MINUTES = 75 # NSE posts the file ~17:50-18:30 IST; scan starts ~17:31
 
 
 # ==============================
@@ -52,6 +57,44 @@ def update_today_candle(df, today, live):
     }
     df.sort_index(inplace=True)
     return df.tail(120)
+
+# ------------------------------
+# Delivery % filter
+# ------------------------------
+def apply_delivery_filter(matched):
+    """
+    Adds "Delivery %" and keeps rows with delivery >= MIN_DELIVERY_PCT.
+    A symbol missing from the NSE file is rejected. If the whole file is
+    unavailable (NSE late/down) the rows are kept with a blank Delivery %,
+    so a missing file never wipes the day's list.
+    """
+    if not matched:
+        return matched
+
+    kept = []
+    for day in sorted({m["_candle_date"] for m in matched}):
+        delivery = get_delivery_pct(day, wait_minutes=DELIVERY_WAIT_MINUTES)
+
+        for m in (m for m in matched if m["_candle_date"] == day):
+            if delivery is None:
+                logger.warning(f"{m['Stock Name']} kept — delivery % unavailable for {day}")
+                m["Delivery %"] = None
+                kept.append(m)
+                continue
+
+            pct = delivery.get(m["Stock Name"])
+            if pct is None or pd.isna(pct) or pct < MIN_DELIVERY_PCT:
+                logger.info(f"{m['Stock Name']} skipped — delivery {pct}% < {MIN_DELIVERY_PCT}%")
+                continue
+
+            m["Delivery %"] = round(float(pct), 2)
+            logger.info(f"✅ {m['Stock Name']} delivery {m['Delivery %']}%")
+            kept.append(m)
+
+    for m in kept:
+        m.pop("_candle_date", None)
+    return kept
+
 
 # ==============================
 # EMA PRICE CROSS SCANNER
@@ -101,6 +144,11 @@ def ema_price_cross():
         setup_case = row["Setup_Case"]
         price_strength = pd.to_numeric(row.get("Price Strength"), errors="coerce")
         eps_strength = pd.to_numeric(row.get("EPS Strength"), errors="coerce")
+
+        # ---- Strength filter (from mapping, no candle data needed) ----
+        if not (price_strength >= MIN_PRICE_STRENGTH and eps_strength >= MIN_EPS_STRENGTH):
+            logger.info(f"{stock} skipped — PS={price_strength} EPS={eps_strength} below {MIN_PRICE_STRENGTH}/{MIN_EPS_STRENGTH}")
+            continue
 
         eod_key = f"{EOD_DATA_PREFIX}/{instrument_id}.csv"
         df = read_csv_from_s3(S3_BUCKET, eod_key)
@@ -172,11 +220,17 @@ def ema_price_cross():
                     "Price Strength": price_strength,
                     "EPS Strength": eps_strength,
                     "Setup_Case": setup_case,
-                    "Scan Time": scan_time_str
+                    "Scan Time": scan_time_str,
+                    "_candle_date": df.index[-1].date(),
                 })
 
         except Exception as e:
             logger.error(f"{stock} failed: {e}")
+
+    logger.info(f"Technical + strength matches: {len(matched)}")
+
+    # ---- Delivery % filter (NSE full bhavcopy of the signal candle's day) ----
+    matched = apply_delivery_filter(matched)
 
     logger.info(f"Total matched stocks today: {len(matched)}")
 
@@ -213,7 +267,7 @@ def ema_price_cross():
     columns_order = [
         "Stock Name", "Security ID", "Market Cap",
         "Open", "Price", "High", "Low",
-        "Day Chg %", "Price Strength", "EPS Strength",
+        "Day Chg %", "Price Strength", "EPS Strength", "Delivery %",
         "Setup_Case", "Scan Time"
     ]
     result_df = result_df.reindex(columns=columns_order)
