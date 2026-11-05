@@ -253,11 +253,25 @@ def ema_price_cross():
 
             today_date = scan_time.date()
             week_start = today_date - timedelta(days=today_date.weekday())
-            existing_df = existing_df[existing_df["Scan Time"].dt.date >= week_start]
+            existing_df = existing_df[
+                (existing_df["Scan Time"].dt.date >= week_start)
+                & (existing_df["Scan Time"].dt.date < today_date)
+            ]
+
+            # A stock already detected earlier this week keeps its first
+            # signal (its High stays the entry trigger) and is not alerted again
+            if not today_df.empty:
+                seen = set(existing_df["Security ID"].astype(int))
+                repeat = today_df["Security ID"].astype(int).isin(seen)
+                for name in today_df.loc[repeat, "Stock Name"]:
+                    logger.info(f"{name} skipped — already detected earlier this week")
+                today_df = today_df[~repeat].reset_index(drop=True)
+                result_df = result_df[~repeat.values].reset_index(drop=True)
 
             combined_df = pd.concat([existing_df, result_df], ignore_index=True)
-            combined_df.sort_values("Scan Time", ascending=False, inplace=True)
+            combined_df.sort_values("Scan Time", ascending=True, inplace=True)
             combined_df.drop_duplicates(subset=["Security ID"], keep="first", inplace=True)
+            combined_df.sort_values("Scan Time", ascending=False, inplace=True)
 
             result_df = combined_df
     except Exception as e:
