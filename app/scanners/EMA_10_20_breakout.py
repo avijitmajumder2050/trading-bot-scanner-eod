@@ -23,6 +23,12 @@ from app.utils.nse_delivery import get_delivery_pct
 logger = logging.getLogger(__name__)
 
 OUTPUT_KEY = "uploads/ema_momentum_EOD.csv"
+OUTPUT_COLUMNS = [
+    "Stock Name", "Security ID", "Market Cap",
+    "Open", "Price", "High", "Low",
+    "Day Chg %", "Price Strength", "EPS Strength", "Delivery %",
+    "Setup_Case", "Scan Time"
+]
 
 # ---- Rule thresholds ----
 MAX_DAY_MOVE_PCT = 6.0     # skip if |close vs prev close| on detection day >= this %
@@ -235,7 +241,9 @@ def ema_price_cross():
     logger.info(f"Total matched stocks today: {len(matched)}")
 
     # ---- Prepare DataFrame ----
-    today_df = pd.DataFrame(matched)
+    # Explicit columns so a no-match night still merges (and keeps) this
+    # week's earlier signals instead of failing and uploading an empty file
+    today_df = pd.DataFrame(matched, columns=OUTPUT_COLUMNS)
 
     # ---- Weekly storage ----
     result_df = today_df.copy()
@@ -277,14 +285,7 @@ def ema_price_cross():
     except Exception as e:
         logger.warning(f"Weekly merge skipped: {e}")
 
-    # ---- Column order ----
-    columns_order = [
-        "Stock Name", "Security ID", "Market Cap",
-        "Open", "Price", "High", "Low",
-        "Day Chg %", "Price Strength", "EPS Strength", "Delivery %",
-        "Setup_Case", "Scan Time"
-    ]
-    result_df = result_df.reindex(columns=columns_order)
+    result_df = result_df.reindex(columns=OUTPUT_COLUMNS)
     upload_csv_to_s3(result_df, S3_BUCKET, OUTPUT_KEY)
 
     logger.info(
